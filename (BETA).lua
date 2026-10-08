@@ -1890,6 +1890,1399 @@ local BtnSaveLoc = CreateButton(DropSavedTP, "Save Current Location", function()
     else
         BtnSaveLoc.Text = "Player Not Found!"
         BtnSaveLoc.TextColor3 = Color3.fromRGB(255, 100, 100)
-        return "pemain tidak ditemukan"
+    end
+    task.delay(2, function()
+        BtnSaveLoc.Text = "Save Current Location"
+        BtnSaveLoc.TextColor3 = c_text
+    end)
+end)
+
+local BtnTeleportLoc = CreateButton(DropSavedTP, "Teleport to Saved", function()
+    -- Refresh dari ConfigData juga agar data tetap menjadi sumber kebenaran.
+    if not savedCustomLocation then
+        savedCustomLocation = DeserializeCFrame(ConfigData.SavedCustomLocation)
+    end
+
+    local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    if savedCustomLocation and hrp then
+        hrp.CFrame = savedCustomLocation
+        hrp.AssemblyLinearVelocity = Vector3.new(0,0,0)
+        BtnTeleportLoc.Text = "Teleported to Saved!"
+        BtnTeleportLoc.TextColor3 = Color3.fromRGB(100, 200, 255)
+        return "berhasil TP ke Saved Location"
+    else
+        BtnTeleportLoc.Text = "No Save Found!"
+        BtnTeleportLoc.TextColor3 = Color3.fromRGB(255, 100, 100)
+        return false
+    end
+    task.delay(2, function()
+        BtnTeleportLoc.Text = "Teleport to Saved"
+        BtnTeleportLoc.TextColor3 = c_text
+    end)
+end)
+
+local BtnResetLoc = CreateButton(DropSavedTP, "Reset Saved Location", function()
+    savedCustomLocation = nil
+    ConfigData.SavedCustomLocation = nil
+    SaveConfig()
+    BtnResetLoc.Text = "Location Reset Permanently!"
+    BtnResetLoc.TextColor3 = Color3.fromRGB(255, 200, 50)
+    task.delay(2, function()
+        BtnResetLoc.Text = "Reset Saved Location"
+        BtnResetLoc.TextColor3 = c_text
+    end)
+end)
+CreateToggle(DropSavedTP, "Auto Teleport on Spawn", "AutoTeleportSpawn", function(state) end)
+
+player.CharacterAdded:Connect(function(char)
+    if ConfigData.AutoTeleportSpawn and savedCustomLocation then
+        task.spawn(function()
+            local hrp = char:WaitForChild("HumanoidRootPart", 5)
+            if hrp then
+                task.wait(0.5)
+                hrp.CFrame = savedCustomLocation
+                hrp.AssemblyLinearVelocity = Vector3.new(0,0,0)
+                NotifyToast("Auto Teleport Spawn", "berhasil TP ke Saved Location", "success")
+            end
+        end)
+    end
+end)
+
+local DropConfigSystem = CreateDropdown(TabConfig, "Configuration Manager")
+CreateButton(DropConfigSystem, "💾 Save UI Settings Manual", function() SaveConfig() end)
+local BtnReset = CreateButton(DropConfigSystem, "⚠️ Reset Settingan (Kembali Default)", function() end)
+BtnReset.MouseButton1Click:Connect(function()
+    ResetConfig()
+    BtnReset.Text = "✅ Reset Global Berhasil!"; BtnReset.TextColor3 = Color3.fromRGB(100, 255, 100)
+    task.wait(2); BtnReset.Text = "⚠️ Reset Settingan (Kembali Default)"; BtnReset.TextColor3 = c_text
+end)
+
+-- ==========================================================
+-- 6.5. PLAYER & SERVER MODS 
+-- ==========================================================
+local DropSafety = CreateDropdown(TabPlayerMods, "🛡️ Server & Safety Mods")
+CreateToggle(DropSafety, "Staff Detector & Auto Hop", "StaffDetector", function(state) end)
+
+-- REJOIN / AUTO RECONNECT
+-- Rejoin ke experience yang sama tanpa memaksa JobId tertentu.
+-- Ini menghindari kegagalan saat instance saat ini private/reserved atau
+-- ketika Roblox menolak teleport langsung ke JobId yang sedang aktif.
+local rejoinInProgress = false
+local function RequestRejoin(source)
+    if rejoinInProgress then return false end
+    rejoinInProgress = true
+
+    local ts = game:GetService("TeleportService")
+    local ok, err = pcall(function()
+        ts:Teleport(game.PlaceId, player)
+    end)
+
+    if not ok then
+        warn("[ShadowHub] " .. tostring(source or "Rejoin") .. " gagal: " .. tostring(err))
+        rejoinInProgress = false
+        return false
+    end
+    return true
+end
+
+-- Jika Roblox menolak/menggagalkan inisiasi teleport, izinkan percobaan lagi.
+TeleportService.TeleportInitFailed:Connect(function(failedPlayer, teleportResult, errorMessage)
+    if failedPlayer == player then
+        rejoinInProgress = false
+        warn("[ShadowHub] Rejoin/teleport gagal: " .. tostring(teleportResult) .. " - " .. tostring(errorMessage))
+    end
+end)
+
+-- Auto reconnect memakai jalur rejoin yang sama dengan tombol manual.
+game:GetService("GuiService").ErrorMessageChanged:Connect(function()
+    if ConfigData.AutoReconnect then
+        RequestRejoin("Auto Reconnect")
+    end
+end)
+CreateToggle(DropSafety, "Auto Reconnect (Anti DC/Kick)", "AutoReconnect", function(state) end)
+
+CreateButton(DropSafety, "🔄 Rejoin Server (Sama)", function()
+    RequestRejoin("Manual Rejoin")
+end)
+
+CreateButton(DropSafety, "🌍 Server Hop (Lainnya)", function()
+    local Http = game:GetService("HttpService")
+    local TPS = game:GetService("TeleportService")
+    local Api = "https://games.roblox.com/v1/games/" .. tostring(game.PlaceId) .. "/servers/Public?sortOrder=Asc&limit=100"
+    pcall(function()
+        local req = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
+        local response = req and req({Url = Api, Method = "GET"}).Body or game:HttpGet(Api)
+        local data = Http:JSONDecode(response)
+        if data and data.data then
+            local servers = {}
+            for _, srv in ipairs(data.data) do
+                if type(srv) == "table" and tonumber(srv.playing) and tonumber(srv.maxPlayers) and srv.playing < srv.maxPlayers - 1 and srv.id ~= game.JobId then
+                    table.insert(servers, srv.id)
+                end
+            end
+            if #servers > 0 then
+                TPS:TeleportToPlaceInstance(game.PlaceId, servers[math.random(1, #servers)], player)
+            else
+                TPS:Teleport(game.PlaceId, player)
+            end
+        end
+    end)
+end)
+
+local DropCamera = CreateDropdown(TabPlayerMods, "🎥 Camera System")
+CreateInfoLabel(DropCamera, "Info PC: Tekan F3 untuk on/off. Gerak [WASD], Naik [E/Space], Turun [Q/Shift].")
+CreateInfoLabel(DropCamera, "Info Mobile: Gunakan Joystick layar untuk gerak, usap layar untuk putar kamera.")
+
+CreateToggle(DropCamera, "Enable Freecam", "Freecam", function(state)
+    local cam = workspace.CurrentCamera
+    if state then
+        if not workspace:FindFirstChild("ShadowFreecamDummy") then
+            local dummy = Instance.new("Model", workspace)
+            dummy.Name = "ShadowFreecamDummy"
+            local fc = Instance.new("Part", dummy)
+            fc.Name = "HumanoidRootPart"
+            fc.Anchored = true; fc.CanCollide = false; fc.Transparency = 1; fc.Size = Vector3.new(1,1,1)
+            local hum = Instance.new("Humanoid", dummy)
+            local char = player.Character
+            if char and char:FindFirstChild("Head") then fc.CFrame = char.Head.CFrame end
+            dummy.PrimaryPart = fc
+        end
+        cam.CameraSubject = workspace:FindFirstChild("ShadowFreecamDummy"):FindFirstChild("Humanoid")
+    else
+        local char = player.Character; if char and char:FindFirstChild("Humanoid") then cam.CameraSubject = char.Humanoid end
+        local dummy = workspace:FindFirstChild("ShadowFreecamDummy"); if dummy then dummy:Destroy() end
+    end
+end)
+
+CreateToggle(DropCamera, "Unlimited Zoom", "UnlimitedZoom", function(state)
+    player.CameraMaxZoomDistance = state and math.huge or 128
+end)
+
+local DropPlayer = CreateDropdown(TabPlayerMods, "🦸 Player Feature")
+
+CreateToggle(DropPlayer, "Enable Custom Sprint", "SprintToggle", function(state) end)
+CreateTextBox(DropPlayer, "Walk Speed (Default: 16)", "SprintSpeed", function(txt) end)
+CreateToggle(DropPlayer, "Enable Fly Mode", "FlyMode", function(state) end)
+CreateTextBox(DropPlayer, "Fly Speed (Default: 50)", "FlySpeed", function(txt) end)
+CreateToggle(DropPlayer, "Hide Stats (Fake Name/Lv)", "HideStats", function(state) end)
+CreateTextBox(DropPlayer, "Custom Fake Name", "CustomName", function(txt) end)
+CreateTextBox(DropPlayer, "Custom Fake Level", "CustomLevel", function(txt) end)
+CreateToggle(DropPlayer, "Roblox Plus Verification Logo", "RobloxPlusBadge", function(state) end)
+CreateToggle(DropPlayer, "Infinite Jump", "InfiniteJump", function(state) end)
+CreateToggle(DropPlayer, "No Clip (Tembus Objek)", "NoClip", function(state) end)
+CreateToggle(DropPlayer, "Lava Kill Immunity", "LavaImmunity", function(state) end)
+CreateToggle(DropPlayer, "Hide Character (Invisible)", "Invisible", function(state)
+    local char = player.Character; if not char then return end
+    for _, v in pairs(char:GetDescendants()) do
+        if v:IsA("BasePart") and v.Name ~= "HumanoidRootPart" then v.Transparency = state and 1 or 0
+        elseif v:IsA("Decal") then v.Transparency = state and 1 or 0 end
+    end
+end)
+
+local DropTheme = CreateDropdown(TabPlayerMods, "🎨 Tema UI Panel")
+CreateSelector(DropTheme, "Pilih Tema", {"Default", "Elegant Gold", "Crimson Blood", "Ocean Blue", "Neon Cyber"}, function(sel)
+    ConfigData.SelectedTheme = sel; SaveConfig(); ApplyTheme()
+end)
+
+-- ==========================================================
+-- 7. BACKGROUND ENGINES & THREADS
+-- ==========================================================
+ApplyTheme()
+player.CameraMaxZoomDistance = ConfigData.UnlimitedZoom and math.huge or 128
+
+UserInputService.JumpRequest:Connect(function()
+    if ConfigData.InfiniteJump and player.Character and player.Character:FindFirstChildOfClass("Humanoid") then
+        player.Character:FindFirstChildOfClass("Humanoid"):ChangeState(Enum.HumanoidStateType.Jumping)
+    end
+end)
+
+UserInputService.InputBegan:Connect(function(input, gp)
+    if not gp and input.KeyCode == Enum.KeyCode.F3 then
+        ConfigData.Freecam = not ConfigData.Freecam
+        if UI_Updaters["Freecam"] then UI_Updaters["Freecam"](ConfigData.Freecam) end
+    end
+end)
+
+RunService.Stepped:Connect(function()
+    local char = player.Character; local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    
+    if ConfigData.NoClip and char then
+        for _, v in pairs(char:GetDescendants()) do if v:IsA("BasePart") then v.CanCollide = false end end
+    end
+    
+    if hum then 
+        pcall(function() 
+            hum.WalkSpeed = ConfigData.SprintToggle and (tonumber(ConfigData.SprintSpeed) or 16) or 16 
+        end) 
+    end
+    
+    if ConfigData.FlyMode and hrp and hum then
+        local cam = workspace.CurrentCamera
+        local ctrl = {f = 0, b = 0, l = 0, r = 0}
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then ctrl.f = 1 end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then ctrl.b = -1 end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then ctrl.l = -1 end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then ctrl.r = 1 end
+        
+        local flySpeed = tonumber(ConfigData.FlySpeed) or 50
+        hum.PlatformStand = true
+        
+        local bv = hrp:FindFirstChild("ShadowFlyVelocity") or Instance.new("BodyVelocity", hrp)
+        bv.Name = "ShadowFlyVelocity"; bv.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+        bv.Velocity = (cam.CFrame.LookVector * (ctrl.f + ctrl.b) + cam.CFrame.RightVector * (ctrl.l + ctrl.r)) * flySpeed
+        
+        local bg = hrp:FindFirstChild("ShadowFlyGyro") or Instance.new("BodyGyro", hrp)
+        bg.Name = "ShadowFlyGyro"; bg.MaxTorque = Vector3.new(9e9, 9e9, 9e9); bg.CFrame = cam.CFrame
+    elseif hum and hum.PlatformStand then
+        hum.PlatformStand = false
+        if hrp:FindFirstChild("ShadowFlyVelocity") then hrp.ShadowFlyVelocity:Destroy() end
+        if hrp:FindFirstChild("ShadowFlyGyro") then hrp.ShadowFlyGyro:Destroy() end
+    end
+
+    if ConfigData.Freecam then
+        local dummy = workspace:FindFirstChild("ShadowFreecamDummy")
+        if dummy and dummy.PrimaryPart then
+            local fc = dummy.PrimaryPart
+            local cam = workspace.CurrentCamera
+            local spd = 2; local mov = Vector3.new()
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then mov = mov + cam.CFrame.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then mov = mov - cam.CFrame.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then mov = mov - cam.CFrame.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then mov = mov + cam.CFrame.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.E) or UserInputService:IsKeyDown(Enum.KeyCode.Space) then mov = mov + Vector3.new(0,1,0) end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Q) or UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then mov = mov - Vector3.new(0,1,0) end
+            fc.CFrame = fc.CFrame + (mov * spd)
+        end
+    end
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if ConfigData.LavaImmunity then
+            for _, v in pairs(workspace:GetDescendants()) do
+                if v:IsA("BasePart") and (string.find(string.lower(v.Name), "lava") or v.Material == Enum.Material.Neon) then
+                    v.CanTouch = false
+                end
+            end
+        end
+        if (ConfigData.HideStats or ConfigData.RobloxPlusBadge) and player.Character then
+            local head = player.Character:FindFirstChild("Head")
+            if head then
+                for _, gui in pairs(head:GetChildren()) do
+                    if gui:IsA("BillboardGui") then
+                        for _, text in pairs(gui:GetDescendants()) do
+                            if text:IsA("TextLabel") and ConfigData.HideStats then
+                                if string.find(text.Text, player.Name) or string.find(text.Text, player.DisplayName) then 
+                                    text.Text = ConfigData.CustomName ~= "" and ConfigData.CustomName or "HiddenShadow" 
+                                end
+                                if string.find(string.lower(text.Text), "lv") then 
+                                    text.Text = "Lv. " .. (ConfigData.CustomLevel ~= "" and ConfigData.CustomLevel or "999") 
+                                end
+                            elseif text:IsA("ImageLabel") then 
+                                if ConfigData.RobloxPlusBadge then
+                                    text.Visible = true
+                                    text.Image = "rbxassetid://10250085440"
+                                else
+                                    text.Visible = false 
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+Players.PlayerAdded:Connect(function(p)
+    if ConfigData.StaffDetector then
+        local isStaff = false
+        if p:GetRankInGroup(game.CreatorId) >= 200 then isStaff = true end
+        local rName = string.lower(p:GetRoleInGroup(game.CreatorId) or "")
+        if string.find(rName, "admin") or string.find(rName, "mod") or string.find(rName, "staff") then isStaff = true end
+        if isStaff then
+            pcall(function()
+                local Http = game:GetService("HttpService"); local TPS = game:GetService("TeleportService")
+                local Api = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100"
+                local data = Http:JSONDecode(game:HttpGet(Api))
+                for _, srv in ipairs(data.data) do
+                    if srv.playing < srv.maxPlayers and srv.id ~= game.JobId then TPS:TeleportToPlaceInstance(game.PlaceId, srv.id, player); break end
+                end
+            end)
+        end
+    end
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if isTrackerActive then
+            if trackerRemaining <= 0 then
+                SendPlayerList(false); trackerRemaining = trackerInterval
+            else
+                trackerRemaining = trackerRemaining - 1
+                if not trackerUIPaused and UIStatus_PlayerMon then
+                    local menit = math.floor(trackerRemaining / 60); local detik = trackerRemaining % 60
+                    UIStatus_PlayerMon.Text = string.format("TRACKER AKTIF : NEXT SEND %02d:%02d", menit, detik)
+                    UIStatus_PlayerMon.TextColor3 = Color3.fromRGB(50, 255, 100)
+                end
+            end
+        end
+    end
+end)
+
+player.Idled:Connect(function() if ConfigData.AntiAFK then VirtualUser:CaptureController(); VirtualUser:ClickButton2(Vector2.new()) end end)
+-- Beberapa executor Roblox hanya mengizinkan collectgarbage("count").
+-- Lindungi panggilan agar executor tidak menghasilkan error berulang.
+task.spawn(function()
+    while true do
+        task.wait(1800)
+        if ConfigData.AutoRAM then
+            pcall(function() collectgarbage("collect") end)
+        end
+    end
+end)
+
+-- ====== [THREAD 1]: AUTO TP CUACA ======
+local hasTeleportedToWeather = false
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if ConfigData.AutoTP then
+            local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+            if not hrp then isWeatherTPBusy = false; continue end
+            local schedule = GetEventScheduleWIB()
+
+            if schedule.state == "COOLDOWN" then
+                isWeatherTPBusy = false 
+                hasTeleportedToWeather = false
+                
+                while ConfigData.AutoTP do
+                    local realTimeSchedule = GetEventScheduleWIB()
+                    if realTimeSchedule.state == "ACTIVE" then break end 
+                    UIStatus_Elemental.Text = "CD: " .. formatSecondsToText(realTimeSchedule.timeLeft)
+                    UIStatus_Elemental.TextColor3 = Color3.fromRGB(255, 200, 50)
+                    task.wait(1)
+                end
+            elseif schedule.state == "ACTIVE" then
+                UIStatus_Elemental.Text = "MENUJU PAPAN..."; UIStatus_Elemental.TextColor3 = Color3.fromRGB(100, 200, 255)
+                if not isPelletExecuting and teleportLockOwner ~= "PELLET" and not isLifeMachineExecuting and not hasTeleportedToWeather then
+                    hrp.CFrame = spotKordinat.Board
+                    hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                    NotifyToast("Auto TP Cuaca", "berhasil TP ke Board", "success")
+                    task.wait(1.5)
+                end
+                
+                local cuacaAktif = GetWeatherIconOnly()
+                if cuacaAktif then
+                    local targetCFrame = spotKordinat[cuacaAktif]; isWeatherTPBusy = true
+                    while ConfigData.AutoTP do
+                        local realTimeSchedule = GetEventScheduleWIB()
+                        if realTimeSchedule.state == "COOLDOWN" then break end 
+                        UIStatus_Elemental.Text = string.upper(cuacaAktif) .. ": " .. formatSecondsToText(realTimeSchedule.timeLeft)
+                        UIStatus_Elemental.TextColor3 = Color3.fromRGB(50, 255, 100)
+                        
+                        -- Execute teleport once safely (No Lock Loop)
+                        if hrp and targetCFrame and not hasTeleportedToWeather and not isPelletExecuting and teleportLockOwner ~= "PELLET" and not isLifeMachineExecuting and not arcadiaEventActive then
+                            hrp.CFrame = CFrame.new(targetCFrame.Position + Vector3.new(0, 3, 0)) * targetCFrame.Rotation
+                            hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                            hasTeleportedToWeather = true
+                            NotifyToast("Auto TP Cuaca", "berhasil TP ke " .. tostring(cuacaAktif), "success")
+                            if ConfigData.AutoFishingToggle then forceFarmTP = true end
+                        end
+                        task.wait(1)
+                    end
+                    isWeatherTPBusy = false
+                    hasTeleportedToWeather = false
+                else
+                    isWeatherTPBusy = false; UIStatus_Elemental.Text = "MENUNGGU ICON CUACA..."; UIStatus_Elemental.TextColor3 = c_subtext; task.wait(1)
+                end
+            end
+        else
+            isWeatherTPBusy = false
+            hasTeleportedToWeather = false
+        end
+    end
+end)
+
+-- ====== [THREAD 1.5]: AUTO TP ARCADIA ======
+--
+-- SIKLUS BARU:
+--   1) Waktu global hanya membuka scanner 20 menit sebelum jadwal Kraken.
+--   2) UI Battle Kraken adalah SATU-SATUNYA trigger TP ke Arcadia.
+--   3) Setelah Battle dimulai, tunggu UI Defeat.
+--   4) Jika Defeat tidak terlihat, backup 5 menit dari waktu Battle dimulai.
+--   5) Setelah return, scanner OFF dan kembali menunggu jadwal global berikutnya.
+--
+local hasTeleportedToArcadia = false
+arcadiaEventActive = false
+local arcadiaEventReturnCFrame = nil
+local arcadiaEventSource = "NONE"
+local arcadiaBackupDeadline = nil
+local arcadiaBattleUISeen = false
+local arcadiaLastEventState = "NONE"
+local arcadiaScannerActive = false
+
+local function NormalizeEventText(text)
+    text = string.lower(tostring(text or ""))
+    text = text:gsub("[^%w%s]", " ")
+    text = text:gsub("%s+", " ")
+    return text
+end
+
+local function GetKrakenEventUIState()
+    local battleFound = false
+    local defeatFound = false
+
+    local function scanGuiRoot(root)
+        if not root then return end
+        local visibleText = {}
+        local hasBattleTitle, hasDefeatTitle, hasStartedText = false, false, false
+        for _, gui in ipairs(root:GetDescendants()) do
+            if (gui:IsA("TextLabel") or gui:IsA("TextButton") or gui:IsA("TextBox"))
+                and gui.Visible then
+                local txt = NormalizeEventText(gui.Text)
+                if txt ~= "" then
+                    table.insert(visibleText, txt)
+                    if string.find(txt, "pertempuran kraken", 1, true)
+                        or string.find(txt, "kraken battle", 1, true) then
+                        hasBattleTitle = true
+                    end
+                    if string.find(txt, "kekalahan kraken", 1, true)
+                        or string.find(txt, "kraken defeat", 1, true) then
+                        hasDefeatTitle = true
+                    end
+                    if string.find(txt, "acara telah dimulai", 1, true)
+                        or string.find(txt, "event has started", 1, true)
+                        or string.find(txt, "battle has started", 1, true) then
+                        hasStartedText = true
+                    end
+                end
+
+                if string.find(txt, "pertempuran kraken", 1, true)
+                    or string.find(txt, "kraken battle", 1, true) then
+                    if string.find(txt, "acara telah dimulai", 1, true)
+                        or string.find(txt, "event has started", 1, true)
+                        or string.find(txt, "battle has started", 1, true) then
+                        battleFound = true
+                    end
+                end
+                if string.find(txt, "kekalahan kraken", 1, true)
+                    or string.find(txt, "kraken defeat", 1, true) then
+                    if string.find(txt, "acara telah dimulai", 1, true)
+                        or string.find(txt, "event has started", 1, true)
+                        or string.find(txt, "battle has started", 1, true) then
+                        defeatFound = true
+                    end
+                end
+            end
+        end
+
+        local joined = " " .. table.concat(visibleText, " ") .. " "
+        if hasBattleTitle and hasStartedText then battleFound = true end
+        if hasDefeatTitle and hasStartedText then defeatFound = true end
+        if (string.find(joined, "pertempuran kraken", 1, true)
+                or string.find(joined, "kraken battle", 1, true))
+            and (string.find(joined, "acara telah dimulai", 1, true)
+                or string.find(joined, "event has started", 1, true)
+                or string.find(joined, "battle has started", 1, true)) then
+            battleFound = true
+        end
+        if (string.find(joined, "kekalahan kraken", 1, true)
+                or string.find(joined, "kraken defeat", 1, true))
+            and (string.find(joined, "acara telah dimulai", 1, true)
+                or string.find(joined, "event has started", 1, true)
+                or string.find(joined, "battle has started", 1, true)) then
+            defeatFound = true
+        end
+    end
+
+    scanGuiRoot(player:FindFirstChildOfClass("PlayerGui"))
+    pcall(function() scanGuiRoot(CoreGui) end)
+
+    if defeatFound then
+        return "DEFEAT"
+    elseif battleFound then
+        return "BATTLE"
+    end
+    return "NONE"
+end
+
+local function ReturnFromArcadiaEvent()
+    local character = player.Character
+    local hrp = character and character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    if arcadiaEventReturnCFrame then
+        hrp.CFrame = arcadiaEventReturnCFrame
+        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        hrp.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+    elseif ConfigData.AutoFishingToggle then
+        forceFarmTP = true
+    end
+end
+
+local function StartArcadiaEvent(source)
+    if arcadiaEventActive or not ConfigData.AutoArcadia then return end
+
+    local character = player.Character
+    local hrp = character and character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+
+    arcadiaEventReturnCFrame = hrp.CFrame
+    arcadiaEventActive = true
+    isArcadiaTPBusy = true
+    hasTeleportedToArcadia = true
+    arcadiaEventSource = source or "UI"
+    arcadiaBattleUISeen = true
+
+    -- Backup 5 menit dimulai tepat saat UI Battle terdeteksi.
+    -- Jika UI Defeat tidak pernah terlihat (mis. DC/GUI hilang), event
+    -- otomatis selesai setelah deadline ini.
+    arcadiaBackupDeadline = os.clock() + (5 * 60)
+
+    local targetCFrame = spotKordinat.Arcadia
+    if targetCFrame then
+        hrp.CFrame = CFrame.new(targetCFrame.Position + Vector3.new(0, 3, 0)) * targetCFrame.Rotation
+        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        hrp.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+        NotifyToast("Auto TP Kraken", "berhasil TP ke Arcadia", "success")
+    end
+
+    if UIStatus_Arcadia then
+        UIStatus_Arcadia.Text = "KRAKEN BATTLE: MENUJU ARCADIA..."
+        UIStatus_Arcadia.TextColor3 = Color3.fromRGB(100, 200, 255)
+    end
+end
+
+local function FinishArcadiaEvent(reason)
+    if not arcadiaEventActive then return end
+
+    arcadiaEventActive = false
+    hasTeleportedToArcadia = false
+    isArcadiaTPBusy = false
+    arcadiaScannerActive = false
+
+    ReturnFromArcadiaEvent()
+
+    if UIStatus_Arcadia then
+        if reason == "DEFEAT" then
+            UIStatus_Arcadia.Text = ConfigData.AutoFishingToggle
+                and "KRAKEN KALAH: FARM LANJUT"
+                or "KRAKEN KALAH: KEMBALI & IDLE"
+        elseif reason == "BACKUP_END" then
+            UIStatus_Arcadia.Text = ConfigData.AutoFishingToggle
+                and "BACKUP 5M: FARM LANJUT"
+                or "BACKUP 5M: KEMBALI & IDLE"
+        else
+            UIStatus_Arcadia.Text = "ARCADIA: SELESAI, KEMBALI"
+        end
+        UIStatus_Arcadia.TextColor3 = Color3.fromRGB(50, 255, 100)
+    end
+
+    -- Jadwal global TIDAK di-reset di sini. Setelah return, loop akan
+    -- menghitung ulang waktu global dan menunggu window scanner berikutnya.
+    arcadiaEventReturnCFrame = nil
+    arcadiaEventSource = "NONE"
+    arcadiaBackupDeadline = nil
+    arcadiaBattleUISeen = false
+    NotifyToast("Auto TP Kraken", "event selesai • berhasil kembali", "success")
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.20)
+
+        if not ConfigData.AutoArcadia then
+            if arcadiaEventActive then
+                FinishArcadiaEvent("DISABLED")
+            else
+                isArcadiaTPBusy = false
+                hasTeleportedToArcadia = false
+                arcadiaScannerActive = false
+            end
+            continue
+        end
+
+        local hrp = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+        if not hrp then continue end
+
+        -- Saat event aktif, scanner tetap hidup karena UI Defeat adalah
+        -- trigger utama untuk mengakhiri event.
+        if arcadiaEventActive then
+            local uiState = GetKrakenEventUIState()
+            arcadiaLastEventState = uiState
+
+            if uiState == "DEFEAT" then
+                FinishArcadiaEvent("DEFEAT")
+                continue
+            end
+
+            -- Jika Defeat tidak pernah terlihat, backup 5 menit tetap menjadi
+            -- safety net. Ini mencakup UI hilang/DC setelah Battle terdeteksi.
+            if arcadiaBackupDeadline and os.clock() >= arcadiaBackupDeadline then
+                FinishArcadiaEvent("BACKUP_END")
+                continue
+            end
+
+            if UIStatus_Arcadia then
+                local left = arcadiaBackupDeadline and math.max(0, math.ceil(arcadiaBackupDeadline - os.clock())) or 0
+                UIStatus_Arcadia.Text = "KRAKEN BATTLE: MENUNGGU KALAH (BACKUP " .. formatSecondsToText(left) .. ")"
+                UIStatus_Arcadia.TextColor3 = Color3.fromRGB(255, 200, 50)
+            end
+            continue
+        end
+
+        -- Di luar event aktif, JANGAN scan UI Kraken terus-menerus.
+        -- Global timer hanya menentukan kapan scanner dibuka.
+        local schedule = GetArcadiaScheduleWIB()
+
+        if schedule.state == "SCAN" then
+            arcadiaScannerActive = true
+            local uiState = GetKrakenEventUIState()
+            arcadiaLastEventState = uiState
+
+            if uiState == "BATTLE" then
+                StartArcadiaEvent("UI")
+            else
+                if UIStatus_Arcadia then
+                    if schedule.timeLeft > 0 then
+                        UIStatus_Arcadia.Text = "SCANNING KRAKEN: EVENT " .. formatSecondsToText(schedule.timeLeft)
+                    else
+                        UIStatus_Arcadia.Text = "SCANNING KRAKEN: MENUNGGU BATTLE UI..."
+                    end
+                    UIStatus_Arcadia.TextColor3 = Color3.fromRGB(255, 200, 50)
+                end
+            end
+        else
+            arcadiaScannerActive = false
+            if UIStatus_Arcadia then
+                UIStatus_Arcadia.Text = "NEXT KRAKEN: " .. formatSecondsToText(schedule.timeLeft)
+                UIStatus_Arcadia.TextColor3 = Color3.fromRGB(255, 200, 50)
+            end
+        end
+    end
+end)
+
+-- ====== [THREAD 1.6]: AUTO LIFE MACHINE PERFECT LOGIC ======
+task.spawn(function()
+    while true do
+        task.wait(0.5) -- Sedikit dipercepat agar real-time CD lebih akurat update nya
+        if ConfigData.AutoLifeMachine then
+            
+            -- Status Life Machine selalu ditampilkan:
+            -- WORLD = timer fisik mesin, PERSISTED = timestamp terakhir
+            -- yang disimpan sebelum DC/rejoin.
+            local lifeCDRemaining = 0
+            local lifeCDText = "READY"
+            local lifeCDSource = "PERSISTED"
+
+            if not isLifeMachineExecuting then
+                lifeCDRemaining, lifeCDText, lifeCDSource = GetLifeMachineCooldownRemaining()
+
+                if lifeCDRemaining > 0 then
+                    UIStatus_LifeMachine.Text = string.format(
+                        "LIFE MACHINE: CD %s [%s]",
+                        formatSecondsToText(lifeCDRemaining),
+                        lifeCDSource
+                    )
+                    UIStatus_LifeMachine.TextColor3 = Color3.fromRGB(255, 200, 50)
+                elseif lifeCDSource == "UNKNOWN" then
+                    UIStatus_LifeMachine.Text = "LIFE MACHINE: SYNCING MACHINE..."
+                    UIStatus_LifeMachine.TextColor3 = Color3.fromRGB(100, 200, 255)
+                else
+                    UIStatus_LifeMachine.Text = "LIFE MACHINE: READY"
+                    UIStatus_LifeMachine.TextColor3 = Color3.fromRGB(50, 255, 100)
+                end
+            end
+
+            if not isLifeMachineExecuting and not isPelletExecuting and teleportLockOwner ~= "PELLET" then
+                local character = player.Character
+                local hrp = character and character:FindFirstChild("HumanoidRootPart")
+                if not hrp then continue end
+
+                -- Deteksi popup Extra Life dalam bahasa Inggris maupun Indonesia.
+                -- Beberapa UI memecah kalimat ke beberapa label, jadi gabungkan
+                -- teks yang terlihat dan scan PlayerGui serta CoreGui.
+                local foundUI = false
+                local function scanExtraLifeUI(root)
+                    if not root or foundUI then return end
+                    local visibleTexts = {}
+                    for _, gui in ipairs(root:GetDescendants()) do
+                        if (gui:IsA("TextLabel") or gui:IsA("TextButton") or gui:IsA("TextBox"))
+                            and gui.Visible then
+                            local txt = NormalizeEventText(gui.Text)
+                            if txt ~= "" then
+                                table.insert(visibleTexts, txt)
+                                if string.find(txt, "you fished up an extra life", 1, true)
+                                    or string.find(txt, "you caught an extra life", 1, true)
+                                    or string.find(txt, "anda menangkap kehidupan ekstra", 1, true)
+                                    or string.find(txt, "anda menangkap nyawa ekstra", 1, true)
+                                    or string.find(txt, "anda mendapatkan nyawa ekstra", 1, true)
+                                    or string.find(txt, "anda menangkap extra life", 1, true) then
+                                    foundUI = true
+                                    return
+                                end
+                            end
+                        end
+                    end
+                    local joined = " " .. table.concat(visibleTexts, " ") .. " "
+                    local hasIndonesianCatch = string.find(joined, "anda menangkap", 1, true)
+                        and (string.find(joined, "kehidupan ekstra", 1, true)
+                            or string.find(joined, "nyawa ekstra", 1, true)
+                            or string.find(joined, "extra life", 1, true))
+                    if hasIndonesianCatch
+                        or string.find(joined, "you fished up an extra life", 1, true)
+                        or string.find(joined, "you caught an extra life", 1, true)
+                        or string.find(joined, "anda menangkap kehidupan ekstra", 1, true)
+                        or string.find(joined, "anda menangkap nyawa ekstra", 1, true)
+                        or string.find(joined, "anda mendapatkan nyawa ekstra", 1, true)
+                        or string.find(joined, "anda menangkap extra life", 1, true) then
+                        foundUI = true
+                    end
+                end
+
+                scanExtraLifeUI(player:FindFirstChildOfClass("PlayerGui"))
+                pcall(function() scanExtraLifeUI(CoreGui) end)
+
+                if not foundUI then
+                    -- Popup sudah hilang: sistem kembali siap menerima
+                    -- kemunculan Extra Life berikutnya.
+                    lifeExtraLifeUIArmed = true
+                elseif lifeExtraLifeUIArmed then
+                    local distToInvaderMap = (hrp.Position - invaderPos).Magnitude
+
+                    if distToInvaderMap < 350 then
+                        -- Disarm SEBELUM teleport supaya popup yang sama
+                        -- tidak menyebabkan perjalanan 2-3 kali.
+                        lifeExtraLifeUIArmed = false
+                        ExecuteLifeMachine(UIStatus_LifeMachine, false)
+                    end
+                end
+            end
+        else
+            if UIStatus_LifeMachine and UIStatus_LifeMachine.Text ~= "LIFE MACHINE: OFF" then
+                UIStatus_LifeMachine.Text = "LIFE MACHINE: OFF"
+                UIStatus_LifeMachine.TextColor3 = c_subtext
+            end
+        end
+    end
+end)
+
+
+-- ====== [THREAD 1.75]: AUTO PELLET MACHINE - 4x FAST CYCLE / INVADER'S ONLY ======
+local function clickTargetUI(targetButton)
+    if targetButton and targetButton.Visible and targetButton.AbsoluteSize.X > 0 then
+        local absPos = targetButton.AbsolutePosition
+        local absSize = targetButton.AbsoluteSize
+        local inset = GuiService:GetGuiInset()
+
+        local clickX = absPos.X + (absSize.X / 2)
+        local clickY = absPos.Y + (absSize.Y / 2) + inset.Y
+
+        pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(clickX, clickY, 0, true, game, 1)
+            task.wait(0.05)
+            VirtualInputManager:SendMouseButtonEvent(clickX, clickY, 0, false, game, 1)
+        end)
+        return true
+    end
+    return false
+end
+
+local function findCloseButton(uiContainer)
+    local candidates = {}
+
+    for _, gui in pairs(uiContainer:GetDescendants()) do
+        if gui:IsA("GuiButton") and gui.Visible and gui.AbsoluteSize.X > 0 then
+            table.insert(candidates, gui)
+        end
+    end
+
+    for _, gui in ipairs(candidates) do
+        local name = string.lower(gui.Name)
+        local txt = gui:IsA("TextButton") and string.lower(gui.Text or "") or ""
+        if string.find(name, "close") or string.find(name, "exit") or name == "x" or txt == "x" then
+            return gui
+        end
+    end
+
+    local bestGuess = nil
+    local highestScore = -math.huge
+
+    for _, gui in ipairs(candidates) do
+        local absSize = gui.AbsoluteSize
+        local absPos = gui.AbsolutePosition
+
+        local ratio = math.max(absSize.X, absSize.Y) / math.max(1, math.min(absSize.X, absSize.Y))
+        if ratio <= 2.5 and absSize.X < 90 and absSize.Y < 90 then
+            local score = absPos.X - (absPos.Y * 3)
+            if score > highestScore then
+                highestScore = score
+                bestGuess = gui
+            end
+        end
+    end
+
+    return bestGuess
+end
+
+local function firePelletPrompt()
+    local fired = false
+
+    for _, desc in pairs(workspace:GetDescendants()) do
+        if desc:IsA("ProximityPrompt") then
+            local parentPart = desc.Parent
+            local isNear = true
+
+            if parentPart and parentPart:IsA("BasePart") then
+                isNear = (parentPart.Position - spotKordinat.PelletMachine.Position).Magnitude < 25
+            end
+
+            if isNear and (
+                string.find(string.lower(desc.ObjectText or ""), "pellet")
+                or string.find(string.lower(desc.ActionText or ""), "use")
+                or string.find(string.lower(desc.ObjectText or ""), "machine")
+            ) then
+                if fireproximityprompt then
+                    fireproximityprompt(desc)
+                    fired = true
+                end
+            end
+        end
+    end
+
+    if not fired then
+        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+        task.wait(0.15)
+        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+    end
+end
+
+-- Mesin/UI logic existing dipertahankan: feed sampai state mesin selesai,
+-- lalu close ketika Full / Not Enough. Di akhir cycle kita juga force-close
+-- jika UI masih terbuka.
+local function processFeedMachineAndClose()
+    local feedResult = "FEEDING"
+    for attempt = 1, 6 do
+        local targetFeedButton = nil
+        local isFull = false
+        local isNotEnough = false
+        local mainUIContainer = nil
+
+        for _, gui in pairs(player.PlayerGui:GetDescendants()) do
+            if (gui:IsA("TextLabel") or gui:IsA("TextButton")) and gui.Visible then
+                local txt = string.lower(gui.Text or "")
+
+                if string.find(txt, "ghost slots full") then
+                    isFull = true
+                    local parent = gui
+                    while parent and not parent:IsA("ScreenGui") do
+                        parent = parent.Parent
+                    end
+                    mainUIContainer = parent or player.PlayerGui
+                    break
+                elseif string.find(txt, "need") and string.find(txt, "more") then
+                    isNotEnough = true
+                    local parent = gui
+                    while parent and not parent:IsA("ScreenGui") do
+                        parent = parent.Parent
+                    end
+                    mainUIContainer = parent or player.PlayerGui
+                    break
+                elseif string.find(txt, "feed machine") then
+                    local parent = gui
+                    for i = 1, 5 do
+                        if parent and parent:IsA("GuiButton") then
+                            targetFeedButton = parent
+                            break
+                        end
+                        parent = parent.Parent
+                    end
+                end
+            end
+        end
+
+        if isFull then
+            if UIStatus_Pellet then
+                UIStatus_Pellet.Text = "STATUS: MESIN FULL! CLOSING..."
+                UIStatus_Pellet.TextColor3 = Color3.fromRGB(255, 100, 100)
+            end
+            NotifyToast("Pellet Machine", "mesin FULL • UI ditutup", "info")
+            feedResult = "FULL"
+            task.wait(0.25)
+
+            local closeButton = findCloseButton(mainUIContainer or player.PlayerGui)
+            if closeButton then
+                clickTargetUI(closeButton)
+                task.wait(0.35)
+            end
+            break
+        end
+
+        if isNotEnough then
+            if UIStatus_Pellet then
+                UIStatus_Pellet.Text = "STATUS: PELLET TIDAK CUKUP! CLOSING..."
+                UIStatus_Pellet.TextColor3 = Color3.fromRGB(255, 150, 50)
+            end
+            NotifyToast("Pellet Machine", "pellet tidak cukup • UI ditutup", "error")
+            feedResult = "NOT_ENOUGH"
+            task.wait(0.25)
+
+            local closeButton = findCloseButton(mainUIContainer or player.PlayerGui)
+            if closeButton then
+                clickTargetUI(closeButton)
+                task.wait(0.35)
+            end
+            break
+        end
+
+        if targetFeedButton then
+            if UIStatus_Pellet then
+                UIStatus_Pellet.Text = "STATUS: FEEDING MACHINE (" .. attempt .. "/6)"
+                UIStatus_Pellet.TextColor3 = Color3.fromRGB(50, 255, 100)
+            end
+            clickTargetUI(targetFeedButton)
+            if attempt == 1 then
+                NotifyToast("Pellet Machine", "Feed Machine berhasil dijalankan", "success")
+            end
+            task.wait(1.5)
+        else
+            task.wait(0.35)
+        end
+    end
+
+    -- User wants every 1x cycle to end with the UI closed.
+    task.wait(0.15)
+    local closeButton = findCloseButton(player.PlayerGui)
+    if closeButton then
+        clickTargetUI(closeButton)
+        NotifyToast("Pellet Machine", "UI berhasil ditutup", "success")
+        task.wait(0.35)
+    end
+    return feedResult
+end
+
+-- One complete pellet-machine cycle:
+-- 1) TP machine -> 2) open UI with E -> 3) immediately TP to final position
+-- 4) Feed Machine -> 5) close UI.
+ExecutePelletCycle = function(isManual)
+    if isPelletExecuting or isLifeMachineExecuting or arcadiaEventActive then
+        return false
+    end
+    -- If another system owns the teleport lock, Pellet waits. Otherwise Pellet takes it.
+    if teleportLockOwner and teleportLockOwner ~= "PELLET" then
+        return false
+    end
+    local acquiredPelletTeleportLock = false
+
+    local character = player.Character
+    local hrp = character and character:FindFirstChild("HumanoidRootPart")
+    if not hrp then
+        return false
+    end
+
+    -- Auto is restricted to Invader's. Manual intentionally bypasses this.
+    if not isManual then
+        local distToInvaderMap = (hrp.Position - invaderPos).Magnitude
+        if distToInvaderMap > 350 then
+            return false
+        end
+    end
+
+    if not teleportLockOwner then
+        teleportLockOwner = "PELLET"
+        acquiredPelletTeleportLock = true
+    end
+    isPelletExecuting = true
+    local originalCFrame = hrp.CFrame
+
+    local ok, err = pcall(function()
+        -- STEP 1: TP pellet machine.
+        if UIStatus_Pellet then
+            UIStatus_Pellet.Text = isManual and "MANUAL: MENUJU MESIN PELLET" or "AUTO: MENUJU MESIN PELLET"
+            UIStatus_Pellet.TextColor3 = Color3.fromRGB(255, 200, 50)
+        end
+
+        hrp.CFrame = spotKordinat.PelletMachine
+        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        NotifyToast("Pellet Machine", "berhasil TP ke mesin", "success")
+        -- Give Invader's -> Arcadia streaming/rendering time to finish before E.
+        task.wait(1.50)
+
+        -- STEP 2: Open the pellet UI.
+        if UIStatus_Pellet then
+            UIStatus_Pellet.Text = "STATUS: MENGAKTIFKAN MESIN (E)"
+            UIStatus_Pellet.TextColor3 = Color3.fromRGB(100, 255, 255)
+        end
+
+        firePelletPrompt()
+        NotifyToast("Pellet Machine", "ProximityPrompt / E berhasil", "success")
+        task.wait(0.45)
+
+        -- STEP 3: Return to the character's original/final position.
+        -- IMPORTANT: this is NOT Arcadia. The Pellet UI remains open, so the
+        -- Feed Machine can be processed from wherever the character started.
+        if UIStatus_Pellet then
+            UIStatus_Pellet.Text = "STATUS: KEMBALI KE POSISI AWAL"
+            UIStatus_Pellet.TextColor3 = Color3.fromRGB(100, 255, 255)
+        end
+
+        hrp.CFrame = originalCFrame
+        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        NotifyToast("Pellet Machine", "berhasil kembali ke posisi awal", "success")
+        task.wait(0.25)
+
+        -- STEP 4 + 5: Existing Feed Machine logic, then close.
+        local feedResult = processFeedMachineAndClose()
+        if feedResult == "FEEDING" then
+            NotifyToast("Pellet Machine", "cycle feeding selesai", "success")
+        end
+    end)
+
+    -- Safety: never leave the UI open after a cycle if a close button exists.
+    if player.PlayerGui then
+        task.wait(0.1)
+        local closeButton = findCloseButton(player.PlayerGui)
+        if closeButton then
+            clickTargetUI(closeButton)
+            task.wait(0.25)
+        end
+    end
+
+    -- Return to the position from which the 4x batch started.
+    character = player.Character
+    hrp = character and character:FindFirstChild("HumanoidRootPart")
+    if hrp and originalCFrame then
+        hrp.CFrame = originalCFrame
+        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+    end
+
+    if ConfigData.AutoFishingToggle then
+        forceFarmTP = true
+    end
+
+    isPelletExecuting = false
+    if acquiredPelletTeleportLock and teleportLockOwner == "PELLET" then
+        teleportLockOwner = nil
+    end
+
+    if not ok then
+        if UIStatus_Pellet then
+            UIStatus_Pellet.Text = "STATUS: CYCLE ERROR, RETRY NEXT"
+            UIStatus_Pellet.TextColor3 = Color3.fromRGB(255, 100, 100)
+        end
+        NotifyToast("Pellet Machine", "cycle gagal • akan retry", "error")
+        return false, err
+    end
+
+    return true
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.25)
+
+        local character = player.Character
+        local hrp = character and character:FindFirstChild("HumanoidRootPart")
+
+        if not ConfigData.AutoPellet then
+            pelletAutoInsideInvader = false
+            pelletAutoStartAt = 0
+            continue
+        end
+
+        if not hrp then
+            continue
+        end
+
+        -- Auto can only START while physically inside Invader's.
+        local distToInvaderMap = (hrp.Position - invaderPos).Magnitude
+        local insideInvader = distToInvaderMap <= 350
+
+        if not insideInvader then
+            pelletAutoInsideInvader = false
+            pelletAutoStartAt = 0
+
+            if not isPelletExecuting and UIStatus_Pellet then
+                UIStatus_Pellet.Text = "AUTO PELLET: MENUNGGU INVADER'S"
+                UIStatus_Pellet.TextColor3 = c_subtext
+            end
+
+            continue
+        end
+
+        -- Detect arrival/entry into Invader's and arm the required 15s delay.
+        if not pelletAutoInsideInvader then
+            pelletAutoInsideInvader = true
+            pelletAutoStartAt = os.clock() + 15
+
+            if UIStatus_Pellet then
+                UIStatus_Pellet.Text = "AUTO PELLET: TUNGGU 15 DETIK DI INVADER'S"
+                UIStatus_Pellet.TextColor3 = Color3.fromRGB(255, 200, 50)
+            end
+            NotifyToast("Pellet Machine", "masuk Invader's • start dalam 15 detik", "info")
+        end
+
+        if os.clock() < pelletAutoStartAt then
+            continue
+        end
+
+        if isPelletExecuting or isLifeMachineExecuting or arcadiaEventActive then
+            continue
+        end
+
+        -- One batch = exactly 4 complete cycles.
+        -- Hold teleport priority for the entire 4-cycle batch, including the 5s gaps.
+        if teleportLockOwner and teleportLockOwner ~= "PELLET" then
+            continue
+        end
+        teleportLockOwner = "PELLET"
+        local batchCharacter = player.Character
+        local batchHRP = batchCharacter and batchCharacter:FindFirstChild("HumanoidRootPart")
+        local originalCFrame = batchHRP and batchHRP.CFrame
+
+        local batchOK = true
+
+        for cycle = 1, 4 do
+            if not ConfigData.AutoPellet then
+                batchOK = false
+                break
+            end
+
+            if UIStatus_Pellet then
+                UIStatus_Pellet.Text = string.format("AUTO PELLET: SIKLUS %d/4", cycle)
+                UIStatus_Pellet.TextColor3 = Color3.fromRGB(50, 255, 100)
+            end
+            NotifyToast("Pellet Machine", string.format("siklus %d/4 dimulai", cycle), "info")
+
+            -- Execute the inner cycle while holding the batch lock.
+            isPelletExecuting = false
+            local ok = ExecutePelletCycle(false)
+            if not ok then
+                batchOK = false
+                break
+            end
+
+            -- 5s only BETWEEN cycles, not before the final cooldown.
+            if cycle < 4 then
+                if UIStatus_Pellet then
+                    UIStatus_Pellet.Text = string.format("AUTO PELLET: JEDA %ds (%d/4)", 5, cycle)
+                    UIStatus_Pellet.TextColor3 = Color3.fromRGB(255, 200, 50)
+                end
+                NotifyToast("Pellet Machine", string.format("siklus %d selesai • jeda 5 detik", cycle), "info")
+                task.wait(5)
+            end
+        end
+
+        -- Ensure batch lock is released and return to the batch-start position.
+        batchCharacter = player.Character
+        batchHRP = batchCharacter and batchCharacter:FindFirstChild("HumanoidRootPart")
+        if batchHRP and originalCFrame then
+            batchHRP.CFrame = originalCFrame
+            batchHRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        end
+
+        isPelletExecuting = false
+        if teleportLockOwner == "PELLET" then
+            teleportLockOwner = nil
+        end
+
+        if not batchOK then
+            if UIStatus_Pellet and ConfigData.AutoPellet then
+                UIStatus_Pellet.Text = "AUTO PELLET: BATCH BERHENTI / MENUNGGU INVADER'S"
+                UIStatus_Pellet.TextColor3 = Color3.fromRGB(255, 150, 50)
+            end
+            task.wait(1)
+            continue
+        end
+
+        NotifyToast("Pellet Machine", "4/4 sukses • cooldown 30 menit dimulai", "success")
+
+        -- 30-minute cooldown starts ONLY after the 4th cycle.
+        local pelletCooldown = 1800
+        while pelletCooldown > 0 and ConfigData.AutoPellet do
+            if UIStatus_Pellet then
+                local m = math.floor(pelletCooldown / 60)
+                local sec = pelletCooldown % 60
+                UIStatus_Pellet.Text = string.format("PELLET COOLDOWN: %02dm %02ds", m, sec)
+                UIStatus_Pellet.TextColor3 = Color3.fromRGB(255, 200, 50)
+            end
+
+            task.wait(1)
+            pelletCooldown = pelletCooldown - 1
+        end
+
+        if UIStatus_Pellet and ConfigData.AutoPellet then
+            UIStatus_Pellet.Text = "AUTO PELLET: ON (MENUNGGU SIKLUS)"
+            UIStatus_Pellet.TextColor3 = Color3.fromRGB(50, 255, 100)
+        end
+
+        -- Re-arm the 15s gate only when the player enters Invader's again.
+        pelletAutoInsideInvader = false
+        pelletAutoStartAt = 0
+    end
+end)
+
+-- ====== [THREAD 2]: AUTO FISHING / FARM MODE ENGINE (NO LOCK POS) ======
+task.spawn(function()
+    while true do
+        task.wait(1)
+        if ConfigData.AutoFishingToggle then
+            local character = player.Character
+            local hrp = character and character:FindFirstChild("HumanoidRootPart")
+            
+            -- Jangan ganggu Event/Pellet/Life Machine jika sedang sibuk teleport
+            local isEventActive = (isWeatherTPBusy or isArcadiaTPBusy or arcadiaEventActive or isPelletExecuting or isLifeMachineExecuting or teleportLockOwner == "PELLET")
+
+            if hrp then
+                if ConfigData.SelectedFarmingMode == "Map 1 (Throne Room)" then
+                    ConfigData.FarmMapCurrent = "Throne"
+                    
+                    ConfigData.DualMapSubTimer = ConfigData.DualMapSubTimer + 1
+                    if ConfigData.DualMapSubTimer >= rotateInterval then
+                        ConfigData.DualMapSubTimer = 0
+                        ConfigData.DualMapPoolIndex = (ConfigData.DualMapPoolIndex % #poolAngles) + 1
+                        SaveConfig()
+                        NotifyToast("Auto Fishing", string.format("rotate %d/%d siap", ConfigData.DualMapPoolIndex, #poolAngles), "info")
+                        forceFarmTP = true
+                    end
+                    
+                    if not isEventActive and forceFarmTP then
+                        local currentAngle = poolAngles[ConfigData.DualMapPoolIndex] or poolAngles[1]
+                        hrp.CFrame = CFrame.new(standPositionRot) * CFrame.Angles(0, math.rad(currentAngle), 0)
+                        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                        NotifyToast("Auto Fishing", string.format("berhasil rotate %d/%d", ConfigData.DualMapPoolIndex, #poolAngles), "success")
+                        forceFarmTP = false
+                    end
+                    
+                    local sisaRot = rotateInterval - ConfigData.DualMapSubTimer
+                    if UIStatus_Fishing then
+                        UIStatus_Fishing.Text = string.format("MAP 1 (POOL %d): %s", ConfigData.DualMapPoolIndex, formatSecondsToText(sisaRot))
+                        UIStatus_Fishing.TextColor3 = Color3.fromRGB(50, 255, 100)
+                    end
+
+                elseif ConfigData.SelectedFarmingMode == "Map 2 (Canyon)" then
+                    ConfigData.FarmMapCurrent = "Canyon"
+                    
+                    if not isEventActive and forceFarmTP then
+                        hrp.CFrame = map2CFrame
+                        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                        NotifyToast("Auto Fishing", "berhasil TP ke Canyon", "success")
+                        forceFarmTP = false
+                    end
+
+                    if UIStatus_Fishing then
+                        UIStatus_Fishing.Text = "MAP 2 (CANYON): ACTIVE"
+                        UIStatus_Fishing.TextColor3 = Color3.fromRGB(50, 255, 100)
+                    end
+
+                elseif ConfigData.SelectedFarmingMode == "Dual Map (Canyon, Throne)" then
+                    ConfigData.DualMapTimer = ConfigData.DualMapTimer + 1
+                    if ConfigData.DualMapTimer >= dualMapInterval then
+                        ConfigData.DualMapTimer = 0
+                        if ConfigData.FarmMapCurrent == "Canyon" then
+                            ConfigData.FarmMapCurrent = "Throne"
+                            ConfigData.DualMapPoolIndex = 1
+                        else
+                            ConfigData.FarmMapCurrent = "Canyon"
+                        end
+                        SaveConfig()
+                        forceFarmTP = true
+                    end
+                    
+                    if ConfigData.FarmMapCurrent == "Throne" then
+                        ConfigData.DualMapSubTimer = ConfigData.DualMapSubTimer + 1
+                        if ConfigData.DualMapSubTimer >= rotateInterval then
+                            ConfigData.DualMapSubTimer = 0
+                            ConfigData.DualMapPoolIndex = (ConfigData.DualMapPoolIndex % #poolAngles) + 1
+                            SaveConfig()
+                            forceFarmTP = true
+                        end
+                    end
+                    
+                    if not isEventActive and forceFarmTP then
+                        if ConfigData.FarmMapCurrent == "Canyon" then
+                            hrp.CFrame = map2CFrame
+                            NotifyToast("Auto Fishing", "berhasil TP ke Canyon", "success")
+                        else
+                            local currentAngle = poolAngles[ConfigData.DualMapPoolIndex] or poolAngles[1]
+                            hrp.CFrame = CFrame.new(standPositionRot) * CFrame.Angles(0, math.rad(currentAngle), 0)
+                            NotifyToast("Auto Fishing", string.format("berhasil rotate %d/%d", ConfigData.DualMapPoolIndex, #poolAngles), "success")
+                        end
+                        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                        forceFarmTP = false
+                    end
+                    
+                    local sisaDual = dualMapInterval - ConfigData.DualMapTimer
+                    if UIStatus_Fishing then
+                        if ConfigData.FarmMapCurrent == "Canyon" then
+                            UIStatus_Fishing.Text = string.format("DUAL MAP (CANYON): SWAP IN %s", formatSecondsToText(sisaDual))
+                        else
+                            local sisaRot = rotateInterval - ConfigData.DualMapSubTimer
+                            UIStatus_Fishing.Text = string.format("DUAL MAP (THRONE P%d): %s | SWAP: %s", ConfigData.DualMapPoolIndex, formatSecondsToText(sisaRot), formatSecondsToText(sisaDual))
+                        end
+                        UIStatus_Fishing.TextColor3 = Color3.fromRGB(50, 255, 100)
+                    end
+
+                elseif ConfigData.SelectedFarmingMode == "Triple Map (Canyon, Throne, Invader's)" then
+                    ConfigData.DualMapTimer = ConfigData.DualMapTimer + 1
+                    if ConfigData.DualMapTimer >= dualMapInterval then
+                        ConfigData.DualMapTimer = 0
+                        if ConfigData.FarmMapCurrent == "Canyon" then
+                            ConfigData.FarmMapCurrent = "Throne"
+                            ConfigData.DualMapPoolIndex = 1
+                        elseif ConfigData.FarmMapCurrent == "Throne" then
+                            ConfigData.FarmMapCurrent = "Invader"
+                        else
+                            ConfigData.FarmMapCurrent = "Canyon"
+                        end
+                        SaveConfig()
+                        forceFarmTP = true
+                    end
+                    
+                    if ConfigData.FarmMapCurrent == "Throne" then
+                        ConfigData.DualMapSubTimer = ConfigData.DualMapSubTimer + 1
+                        if ConfigData.DualMapSubTimer >= rotateInterval then
+                            ConfigData.DualMapSubTimer = 0
+                            ConfigData.DualMapPoolIndex = (ConfigData.DualMapPoolIndex % #poolAngles) + 1
+                            SaveConfig()
+                            forceFarmTP = true
+                        end
+                    end
+                    
+                    if not isEventActive and forceFarmTP then
+                        if ConfigData.FarmMapCurrent == "Canyon" then
+                            hrp.CFrame = map2CFrame
+                            NotifyToast("Auto Fishing", "berhasil TP ke Canyon", "success")
+                        elseif ConfigData.FarmMapCurrent == "Invader" then
+                            hrp.CFrame = invaderCFrame
+                            NotifyToast("Auto Fishing", "berhasil TP ke Invader's", "success")
+                        else
+                            local currentAngle = poolAngles[ConfigData.DualMapPoolIndex] or poolAngles[1]
+                            hrp.CFrame = CFrame.new(standPositionRot) * CFrame.Angles(0, math.rad(currentAngle), 0)
+                            NotifyToast("Auto Fishing", string.format("berhasil rotate %d/%d", ConfigData.DualMapPoolIndex, #poolAngles), "success")
+                        end
+                        hrp.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                        forceFarmTP = false
+                    end
+                    
+                    local sisaDual = dualMapInterval - ConfigData.DualMapTimer
+                    if UIStatus_Fishing then
+                        if ConfigData.FarmMapCurrent == "Canyon" then
+                            UIStatus_Fishing.Text = string.format("TRIPLE MAP (CANYON): SWAP IN %s", formatSecondsToText(sisaDual))
+                        elseif ConfigData.FarmMapCurrent == "Invader" then
+                            UIStatus_Fishing.Text = string.format("TRIPLE MAP (INVADER): SWAP IN %s", formatSecondsToText(sisaDual))
+                        else
+                            local sisaRot = rotateInterval - ConfigData.DualMapSubTimer
+                            UIStatus_Fishing.Text = string.format("TRIPLE MAP (THRONE P%d): %s | SWAP: %s", ConfigData.DualMapPoolIndex, formatSecondsToText(sisaRot), formatSecondsToText(sisaDual))
+                        end
+                        UIStatus_Fishing.TextColor3 = Color3.fromRGB(50, 255, 100)
+                    end
+                end
+            end
+        end
     end
 end)
