@@ -182,7 +182,7 @@ local function ApplyTheme()
     local t = Themes[ConfigData.SelectedTheme] or Themes["Default"]
     c_bg, c_sidebar, c_content, c_accent, c_text, c_subtext = t.bg, t.sidebar, t.content, t.accent, t.text, t.subtext
     
-    local gui = CoreGui:FindFirstChild("Shadow_Panel_V8")
+    local gui = PlayerGui:FindFirstChild("Shadow_Panel_V8")
     if not gui then return end
     
     for _, obj in ipairs(gui:GetDescendants()) do
@@ -208,6 +208,263 @@ local function ApplyTheme()
 end
 
 -- ========================================================
+-- 2. DATA KOORDINAT, DETEKSI MAP & HELPERS
+-- ========================================================
+local spotKordinat = {
+    Board = CFrame.lookAt(Vector3.new(-855.63, 44.43, 5187.01), Vector3.new(-855.63, 44.43, 5187.01) + Vector3.new(0, 0, 1)),
+    Volcano = CFrame.lookAt(Vector3.new(-813.46, 59.37, 5271.69), Vector3.new(-813.46, 59.37, 5271.69) + Vector3.new(1, 0, 1)),
+    Storm = CFrame.lookAt(Vector3.new(-864.27, 56.06, 5309.37), Vector3.new(-864.27, 56.06, 5309.37) + Vector3.new(-1, 0, 1)),
+    Blizzard = CFrame.lookAt(Vector3.new(-968.19, 45.83, 5345.58), Vector3.new(-968.19, 45.83, 5345.58) + Vector3.new(-1, 0, -1)),
+    Arcadia = CFrame.new(Vector3.new(1338.43, 14.29, 3004.07)) * CFrame.Angles(0, math.rad(-0), 75),
+    PelletMachine = CFrame.new(1323.34, 13.34, 2968.82)
+}
+local DatabaseIconCuaca = {["118379404229807"] = "Blizzard", ["105076841543450"] = "Storm", ["76632496002371"] = "Volcano"}
+local posisiSimpanan = nil
+local posisiSimpananArcadia = nil
+
+local isWeatherTPBusy = false
+local isArcadiaTPBusy = false
+local isPelletExecuting = false
+local isLifeMachineExecuting = false
+local teleportLockOwner = nil
+local ExecutePelletCycle -- forward declaration
+local pelletAutoInsideInvader = false
+local pelletAutoStartAt = 0
+local arcadiaEventActive = false
+local lifeExtraLifeUIArmed = true
+
+local standPositionRot = Vector3.new(-1290.24, -855.68, 5596.16)
+local poolAngles = {-103.43, 135.57, 15.08}
+local currentPoolIndex = 1
+
+local map2Pos = Vector3.new(-4014.58, -543.00, 564.95)
+local map2Degree = 46.85
+local map2CFrame = CFrame.new(map2Pos) * CFrame.Angles(0, math.rad(map2Degree), 0)
+
+local invaderPos = Vector3.new(1360.69, -960.90, 2977.51)
+local invaderDegree = 158.26
+local invaderCFrame = CFrame.new(invaderPos) * CFrame.Angles(0, math.rad(invaderDegree), 0)
+
+local lifeMachineCFrame = CFrame.new(1266.16, -963.12, 3009.05) * CFrame.Angles(0, math.rad(-32.5), 0)
+
+local rotateInterval = 1160
+local dualMapInterval = 3480
+
+-- ====== FUNGSI KHUSUS LIFE MACHINE ======
+local function ParseLifeMachineTimer(text)
+    if type(text) ~= "string" then return nil end
+    local h, m, sec = text:match("(%d+):(%d%d):(%d%d)")
+    if h and m and sec then
+        return (tonumber(h) * 3600) + (tonumber(m) * 60) + tonumber(sec)
+    end
+    m, sec = text:match("(%d+):(%d%d)")
+    if m and sec then
+        return (tonumber(m) * 60) + tonumber(sec)
+    end
+    return nil
+end
+
+local function GetLifeMachineWorldStatus()
+    local radius = 12
+    local parts = workspace:GetPartBoundsInRadius(lifeMachineCFrame.Position, radius)
+    local nearestTimerDistance = math.huge
+    local nearestTimerText, nearestTimerSeconds = nil, nil
+    local nearestReadyDistance = math.huge
+    local foundReady = false
+    local seenGui = {}
+
+    local function resolveGuiPart(gui, fallbackPart)
+        local adornee = gui.Adornee
+        if adornee and adornee:IsA("BasePart") then return adornee end
+        local parent = gui.Parent
+        while parent and parent ~= workspace do
+            if parent:IsA("BasePart") then return parent end
+            parent = parent.Parent
+        end
+        if fallbackPart and fallbackPart:IsA("BasePart") then return fallbackPart end
+        return nil
+    end
+
+    local function inspectGui(gui, fallbackPart)
+        if seenGui[gui] then return end
+        seenGui[gui] = true
+        local guiPart = resolveGuiPart(gui, fallbackPart)
+        if not guiPart then return end
+        local distance = (guiPart.Position - lifeMachineCFrame.Position).Magnitude
+        if distance > radius then return end
+
+        for _, label in ipairs(gui:GetDescendants()) do
+            if (label:IsA("TextLabel") or label:IsA("TextButton") or label:IsA("TextBox")) and label.Visible then
+                local value = tostring(label.Text or "")
+                local seconds = ParseLifeMachineTimer(value)
+                if seconds ~= nil and distance < nearestTimerDistance then
+                    nearestTimerDistance = distance
+                    nearestTimerText = value
+                    nearestTimerSeconds = seconds
+                elseif string.find(string.lower(value), "ready", 1, true) and distance < nearestReadyDistance then
+                    nearestReadyDistance = distance
+                    foundReady = true
+                end
+            end
+        end
+    end
+
+    for _, part in ipairs(parts) do
+        if part:IsA("BasePart") then
+            for _, obj in ipairs(part:GetChildren()) do
+                if obj:IsA("SurfaceGui") or obj:IsA("BillboardGui") then
+                    inspectGui(obj, part)
+                end
+            end
+            for _, obj in ipairs(part:GetDescendants()) do
+                if obj:IsA("SurfaceGui") or obj:IsA("BillboardGui") then
+                    inspectGui(obj, part)
+                end
+            end
+        end
+    end
+
+    local nearestPart, nearestPartDistance = nil, math.huge
+    for _, part in ipairs(parts) do
+        if part:IsA("BasePart") then
+            local d = (part.Position - lifeMachineCFrame.Position).Magnitude
+            if d < nearestPartDistance then
+                nearestPart, nearestPartDistance = part, d
+            end
+        end
+    end
+    local machineModel = nearestPart and nearestPart:FindFirstAncestorOfClass("Model")
+    if machineModel then
+        for _, obj in ipairs(machineModel:GetDescendants()) do
+            if obj:IsA("SurfaceGui") or obj:IsA("BillboardGui") then
+                inspectGui(obj, nearestPart)
+            end
+        end
+    end
+
+    local guiRoots = {}
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("BillboardGui") or obj:IsA("SurfaceGui") or obj:IsA("ScreenGui") then
+            table.insert(guiRoots, obj)
+        end
+    end
+    local playerGui = player:FindFirstChildOfClass("PlayerGui")
+    if playerGui then
+        for _, obj in ipairs(playerGui:GetDescendants()) do
+            if obj:IsA("ScreenGui") or obj:IsA("BillboardGui") or obj:IsA("SurfaceGui") then
+                table.insert(guiRoots, obj)
+            end
+        end
+    end
+
+    local bestMachineTimer, bestMachineSeconds = nil, nil
+    for _, guiRoot in ipairs(guiRoots) do
+        local labels = {}
+        local hasBoostTitle = false
+        for _, label in ipairs(guiRoot:GetDescendants()) do
+            if label:IsA("TextLabel") or label:IsA("TextButton") or label:IsA("TextBox") then
+                table.insert(labels, label)
+                local titleText = string.lower(tostring(label.Text or "")):gsub("%s+", " ")
+                if string.find(titleText, "8-bit boost", 1, true)
+                    or string.find(titleText, "8 bit boost", 1, true) then
+                    hasBoostTitle = true
+                end
+            end
+        end
+
+        if hasBoostTitle then
+            for _, label in ipairs(labels) do
+                local value = tostring(label.Text or "")
+                local seconds = ParseLifeMachineTimer(value)
+                if seconds ~= nil and seconds > 0 then
+                    bestMachineTimer = value
+                    bestMachineSeconds = seconds
+                    break
+                end
+            end
+        end
+        if bestMachineSeconds ~= nil then break end
+    end
+
+    if bestMachineSeconds ~= nil then
+        return "COOLDOWN", bestMachineTimer, bestMachineSeconds
+    end
+
+    if nearestTimerSeconds ~= nil then
+        return "COOLDOWN", nearestTimerText, nearestTimerSeconds
+    elseif foundReady then
+        return "READY", "READY", 0
+    end
+    return nil, nil, nil
+end
+
+local lifeMachineLastPersistedUntil = tonumber(ConfigData.LifeMachineCooldownUntil) or 0
+local lifeMachineLastPersistedState = (lifeMachineLastPersistedUntil > os.time()) and "COOLDOWN" or "READY"
+local lifeMachineLastSaveClock = 0
+
+local function PersistLifeMachineCooldown(untilTime, timerText, state)
+    local oldUntil = tonumber(ConfigData.LifeMachineCooldownUntil) or 0
+    local oldText = tostring(ConfigData.LifeMachineLastTimerText or "")
+    ConfigData.LifeMachineCooldownUntil = tonumber(untilTime) or 0
+    ConfigData.LifeMachineLastTimerText = tostring(timerText or "")
+
+    local nowClock = os.clock()
+    local shouldSave = (state ~= lifeMachineLastPersistedState)
+        or (math.abs((tonumber(untilTime) or 0) - oldUntil) >= 2)
+        or (state == "COOLDOWN" and nowClock - lifeMachineLastSaveClock >= 5)
+        or (state == "READY" and oldText ~= "")
+
+    if shouldSave then
+        lifeMachineLastPersistedUntil = ConfigData.LifeMachineCooldownUntil
+        lifeMachineLastPersistedState = state or "READY"
+        lifeMachineLastSaveClock = nowClock
+        SaveConfig()
+    end
+end
+
+local function GetLifeMachineCooldownRemaining()
+    local now = os.time()
+    local state, machineText, machineSeconds = GetLifeMachineWorldStatus()
+
+    if state == "COOLDOWN" and machineSeconds ~= nil then
+        local deadline = now + math.max(0, math.floor(machineSeconds))
+        PersistLifeMachineCooldown(deadline, machineText or "", "COOLDOWN")
+        return math.max(0, math.floor(machineSeconds)), machineText, "MACHINE"
+    end
+
+    if state == "READY" then
+        PersistLifeMachineCooldown(0, "", "READY")
+        return 0, "READY", "MACHINE"
+    end
+
+    local deadline = tonumber(ConfigData.LifeMachineCooldownUntil) or 0
+    local remaining = math.max(0, deadline - now)
+    if remaining > 0 then
+        return remaining, ConfigData.LifeMachineLastTimerText, "SAVED"
+    end
+
+    if deadline > 0 then
+        return 0, "READY", "SAVED"
+    end
+    return 0, "SYNCING", "UNKNOWN"
+end
+
+local function GetMachineTimerText()
+    local remaining, text = GetLifeMachineCooldownRemaining()
+    if remaining > 0 then
+        return text or formatSecondsToText(remaining), remaining
+    end
+    return "READY", 0
+end
+
+local NotifyToast
+
+local function formatSecondsToText(seconds)
+    local h = math.floor(seconds / 3600); local m = math.floor((seconds % 3600) / 60); local s = seconds % 60
+    if h > 0 then return string.format("%02dh %02dm %02ds", h, m, s) else return string.format("%02dm %02ds", m, s) end
+end
+
+-- ========================================================
 -- 5. UI SYSTEM (SHADOW PANEL V8)
 -- ========================================================
 local ScreenGui = Instance.new("ScreenGui")
@@ -218,8 +475,7 @@ ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 ScreenGui.Parent = PlayerGui
 
 -- ========================================================
--- COMPACT TOAST NOTIFICATION SYSTEM
--- Safe/global notification layer: max 4 visible, FIFO queue, never drops.
+-- TOAST NOTIFICATION SYSTEM
 -- ========================================================
 local ToastHolder = Instance.new("Frame")
 ToastHolder.Name = "ToastHolder"
@@ -252,7 +508,6 @@ end
 
 local function BuildToast(title, message, kind)
     toastSerial = toastSerial + 1
-
     local toast = Instance.new("Frame")
     toast.Name = "Toast_" .. tostring(toastSerial)
     toast.Size = UDim2.new(0, 250, 0, 40)
@@ -389,6 +644,9 @@ NotifyToast = function(title, message, kind)
     end)
 end
 
+-- ========================================================
+-- MAIN UI FRAME
+-- ========================================================
 local MainFrame = Instance.new("Frame", ScreenGui)
 MainFrame.Name = "ShadowHub_Main"
 MainFrame.Size = UDim2.new(0, ConfigData.UISizeX or 520, 0, ConfigData.UISizeY or 320)
@@ -401,13 +659,6 @@ MainFrame:SetAttribute("ThemeRole", "bg")
 Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 local MS = Instance.new("UIStroke", MainFrame); MS.Color = Color3.fromRGB(40, 40, 50); MS.Thickness = 1
 MS:SetAttribute("ThemeRole", "stroke")
-
-local LogoBtn = Instance.new("TextButton", ScreenGui)
-LogoBtn.Size = UDim2.new(0, 45, 0, 45); LogoBtn.Position = UDim2.new(0, 15, 0.45, 0)
-LogoBtn.BackgroundColor3 = c_sidebar; LogoBtn.Text = "SHDW\n🚀"; LogoBtn.TextColor3 = c_accent
-LogoBtn:SetAttribute("ThemeRole", "sidebar")
-LogoBtn.Font = Enum.Font.GothamBlack; LogoBtn.TextSize = 11; LogoBtn.Active = true; LogoBtn.Draggable = true; LogoBtn.Visible = false
-Instance.new("UICorner", LogoBtn).CornerRadius = UDim.new(0, 10)
 
 local Header = Instance.new("Frame", MainFrame)
 Header.Size = UDim2.new(1, 0, 0, 40); Header.BackgroundTransparency = 1
@@ -424,13 +675,278 @@ CloseBtn.BackgroundTransparency = 1; CloseBtn.Text = "—"; CloseBtn.TextColor3 
 CloseBtn:SetAttribute("ThemeRole", "accent_text")
 CloseBtn.Font = Enum.Font.GothamBold; CloseBtn.TextSize = 16
 
+local LogoBtn = Instance.new("TextButton", ScreenGui)
+LogoBtn.Size = UDim2.new(0, 45, 0, 45); LogoBtn.Position = UDim2.new(0, 15, 0.45, 0)
+LogoBtn.BackgroundColor3 = c_sidebar; LogoBtn.Text = "SHDW\n🚀"; LogoBtn.TextColor3 = c_accent
+LogoBtn:SetAttribute("ThemeRole", "sidebar")
+LogoBtn.Font = Enum.Font.GothamBlack; LogoBtn.TextSize = 11; LogoBtn.Active = true; LogoBtn.Draggable = true; LogoBtn.Visible = false
+Instance.new("UICorner", LogoBtn).CornerRadius = UDim.new(0, 10)
+
 LogoBtn.MouseButton1Click:Connect(function() MainFrame.Visible = true; LogoBtn.Visible = false end)
 CloseBtn.MouseButton1Click:Connect(function() MainFrame.Visible = false; LogoBtn.Visible = true end)
 
-local ResizeHandle = Instance.new("TextButton", MainFrame)
-ResizeHandle.Size = UDim2.new(0, 20, 0, 20); ResizeHandle.Position = UDim2.new(1, -20, 1, -20)
-ResizeHandle.BackgroundTransparency = 1; ResizeHandle.Text = "◢"; ResizeHandle.TextColor3 = c_subtext
-ResizeHandle:SetAttribute("ThemeRole", "subtext")
-ResizeHandle.TextSize = 14; ResizeHandle.Font = Enum.Font.GothamBold
+-- ========================================================
+-- SIDEBAR & TABS
+-- ========================================================
+local Sidebar = Instance.new("Frame", MainFrame)
+Sidebar.Name = "Sidebar"
+Sidebar.Size = UDim2.new(0, 120, 1, -40)
+Sidebar.Position = UDim2.new(0, 0, 0, 40)
+Sidebar.BackgroundColor3 = c_sidebar
+Sidebar.BorderSizePixel = 0
+Sidebar:SetAttribute("ThemeRole", "sidebar")
 
--- continue rest of file unchanged...
+local SidebarList = Instance.new("UIListLayout", Sidebar)
+SidebarList.FillDirection = Enum.FillDirection.Vertical
+SidebarList.SortOrder = Enum.SortOrder.LayoutOrder
+SidebarList.Padding = UDim.new(0, 3)
+
+-- CONTENT AREA
+local ContentArea = Instance.new("Frame", MainFrame)
+ContentArea.Name = "ContentArea"
+ContentArea.Size = UDim2.new(1, -120, 1, -40)
+ContentArea.Position = UDim2.new(0, 120, 0, 40)
+ContentArea.BackgroundColor3 = c_content
+ContentArea.BorderSizePixel = 0
+ContentArea:SetAttribute("ThemeRole", "content")
+
+local ContentScroll = Instance.new("ScrollingFrame", ContentArea)
+ContentScroll.Size = UDim2.new(1, 0, 1, 0)
+ContentScroll.BackgroundTransparency = 1
+ContentScroll.BorderSizePixel = 0
+ContentScroll.ScrollBarThickness = 8
+ContentScroll.ScrollBarImageColor3 = c_accent
+ContentScroll:SetAttribute("ThemeRole", "scroll")
+ContentScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+
+local ContentLayout = Instance.new("UIListLayout", ContentScroll)
+ContentLayout.FillDirection = Enum.FillDirection.Vertical
+ContentLayout.SortOrder = Enum.SortOrder.LayoutOrder
+ContentLayout.Padding = UDim.new(0, 8)
+
+-- ========================================================
+-- TAB SYSTEM
+-- ========================================================
+local Tabs = {}
+local CurrentTab = nil
+
+local function CreateTab(name, active)
+    local TabBtn = Instance.new("TextButton", Sidebar)
+    TabBtn.Name = name .. "_TabBtn"
+    TabBtn.Size = UDim2.new(1, -6, 0, 35)
+    TabBtn.BackgroundColor3 = active and c_accent or c_content
+    TabBtn.Text = name
+    TabBtn.TextColor3 = active and Color3.fromRGB(15, 15, 18) or c_text
+    TabBtn:SetAttribute("ThemeRole", "content")
+    TabBtn.Font = Enum.Font.GothamSemibold
+    TabBtn.TextSize = 10
+    Instance.new("UICorner", TabBtn).CornerRadius = UDim.new(0, 5)
+    
+    local TabContent = Instance.new("Frame", ContentScroll)
+    TabContent.Name = name .. "_Content"
+    TabContent.Size = UDim2.new(1, 0, 0, 0)
+    TabContent.BackgroundTransparency = 1
+    TabContent.BorderSizePixel = 0
+    TabContent.Visible = active
+
+    local TabLayout = Instance.new("UIListLayout", TabContent)
+    TabLayout.FillDirection = Enum.FillDirection.Vertical
+    TabLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    TabLayout.Padding = UDim.new(0, 5)
+
+    Tabs[name] = {
+        Button = TabBtn,
+        Content = TabContent,
+        Layout = TabLayout
+    }
+
+    TabBtn.MouseButton1Click:Connect(function()
+        if CurrentTab and Tabs[CurrentTab] then
+            Tabs[CurrentTab].Content.Visible = false
+            Tabs[CurrentTab].Button.BackgroundColor3 = c_content
+            Tabs[CurrentTab].Button.TextColor3 = c_text
+        end
+        CurrentTab = name
+        TabContent.Visible = true
+        TabBtn.BackgroundColor3 = c_accent
+        TabBtn.TextColor3 = Color3.fromRGB(15, 15, 18)
+    end)
+
+    return TabContent
+end
+
+-- ========================================================
+-- CREATE TABS
+-- ========================================================
+local AutoTab = CreateTab("AUTO", true)
+CurrentTab = "AUTO"
+
+local SettingsTab = CreateTab("SETTINGS", false)
+local ToolsTab = CreateTab("TOOLS", false)
+local ThemeTab = CreateTab("THEME", false)
+
+-- ========================================================
+-- POPULATE AUTO TAB
+-- ========================================================
+local function CreateToggle(parent, text, configKey, callback)
+    local Container = Instance.new("Frame", parent)
+    Container.Size = UDim2.new(1, -10, 0, 25)
+    Container.BackgroundTransparency = 1
+    Container.BorderSizePixel = 0
+
+    local Label = Instance.new("TextLabel", Container)
+    Label.Size = UDim2.new(0.7, 0, 1, 0)
+    Label.BackgroundTransparency = 1
+    Label.Text = text
+    Label.TextColor3 = c_text
+    Label:SetAttribute("ThemeRole", "text")
+    Label.Font = Enum.Font.GothamSemibold
+    Label.TextSize = 9
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+
+    local ToggleBtn = Instance.new("TextButton", Container)
+    ToggleBtn.Size = UDim2.new(0, 30, 0, 15)
+    ToggleBtn.Position = UDim2.new(1, -35, 0.5, -7.5)
+    ToggleBtn.BackgroundColor3 = ConfigData[configKey] and Color3.fromRGB(50, 200, 100) or Color3.fromRGB(150, 150, 150)
+    ToggleBtn.Text = ""
+    ToggleBtn.BorderSizePixel = 0
+    Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(0, 7)
+
+    ToggleBtn.MouseButton1Click:Connect(function()
+        ConfigData[configKey] = not ConfigData[configKey]
+        ToggleBtn.BackgroundColor3 = ConfigData[configKey] and Color3.fromRGB(50, 200, 100) or Color3.fromRGB(150, 150, 150)
+        SaveConfig()
+        if callback then callback(ConfigData[configKey]) end
+    end)
+
+    UI_Updaters[configKey] = function(value)
+        ToggleBtn.BackgroundColor3 = value and Color3.fromRGB(50, 200, 100) or Color3.fromRGB(150, 150, 150)
+    end
+end
+
+CreateToggle(AutoTab, "Auto TP", "AutoTP", nil)
+CreateToggle(AutoTab, "Auto Arcadia", "AutoArcadia", nil)
+CreateToggle(AutoTab, "Auto Pellet", "AutoPellet", nil)
+CreateToggle(AutoTab, "Auto Life Machine", "AutoLifeMachine", nil)
+CreateToggle(AutoTab, "Auto Fishing", "AutoFishingToggle", nil)
+CreateToggle(AutoTab, "AntiAFK", "AntiAFK", nil)
+
+-- ========================================================
+-- POPULATE SETTINGS TAB
+-- ========================================================
+local function CreateButton(parent, text, callback)
+    local Btn = Instance.new("TextButton", parent)
+    Btn.Size = UDim2.new(1, -10, 0, 30)
+    Btn.BackgroundColor3 = c_accent
+    Btn.Text = text
+    Btn.TextColor3 = Color3.fromRGB(240, 240, 240)
+    Btn:SetAttribute("ThemeRole", "accent_bg")
+    Btn.Font = Enum.Font.GothamBold
+    Btn.TextSize = 10
+    Btn.BorderSizePixel = 0
+    Instance.new("UICorner", Btn).CornerRadius = UDim.new(0, 6)
+    
+    Btn.MouseButton1Click:Connect(function()
+        if callback then callback() end
+    end)
+    
+    return Btn
+end
+
+CreateButton(SettingsTab, "Reset Config", function()
+    ResetConfig()
+    NotifyToast("Settings", "Config Reset!", "success")
+end)
+
+CreateButton(SettingsTab, "Save Config", function()
+    SaveConfig()
+    NotifyToast("Settings", "Config Saved!", "success")
+end)
+
+-- ========================================================
+-- POPULATE THEME TAB
+-- ========================================================
+local function CreateSelector(parent, titleText, items, onSelect)
+    local Frame = Instance.new("Frame", parent)
+    Frame.Size = UDim2.new(1, -10, 0, 80)
+    Frame.BackgroundTransparency = 1
+    Frame.BorderSizePixel = 0
+
+    local Title = Instance.new("TextLabel", Frame)
+    Title.Size = UDim2.new(1, 0, 0, 20)
+    Title.BackgroundTransparency = 1
+    Title.Text = titleText
+    Title.TextColor3 = c_accent
+    Title:SetAttribute("ThemeRole", "accent_text")
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 10
+
+    local SelectBtn = Instance.new("TextButton", Frame)
+    SelectBtn.Size = UDim2.new(1, 0, 0, 25)
+    SelectBtn.Position = UDim2.new(0, 0, 0, 25)
+    SelectBtn.BackgroundColor3 = c_content
+    SelectBtn.Text = items[1]
+    SelectBtn.TextColor3 = c_text
+    SelectBtn:SetAttribute("ThemeRole", "text")
+    SelectBtn.Font = Enum.Font.GothamSemibold
+    SelectBtn.TextSize = 9
+    SelectBtn.BorderSizePixel = 0
+    Instance.new("UICorner", SelectBtn).CornerRadius = UDim.new(0, 5)
+
+    local DropdownList = Instance.new("Frame", Frame)
+    DropdownList.Size = UDim2.new(1, 0, 0, 0)
+    DropdownList.Position = UDim2.new(0, 0, 0, 50)
+    DropdownList.BackgroundColor3 = c_sidebar
+    DropdownList.BorderSizePixel = 0
+    DropdownList.Visible = false
+    Instance.new("UICorner", DropdownList).CornerRadius = UDim.new(0, 5)
+
+    local ListLayout = Instance.new("UIListLayout", DropdownList)
+    ListLayout.FillDirection = Enum.FillDirection.Vertical
+    ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+    local function populate(newItems)
+        DropdownList:ClearAllChildren()
+        ListLayout = Instance.new("UIListLayout", DropdownList)
+        ListLayout.FillDirection = Enum.FillDirection.Vertical
+        ListLayout.SortOrder = Enum.SortOrder.LayoutOrder
+
+        for _, item in ipairs(newItems) do
+            local Option = Instance.new("TextButton", DropdownList)
+            Option.Size = UDim2.new(1, 0, 0, 25)
+            Option.BackgroundColor3 = c_content
+            Option.Text = item
+            Option.TextColor3 = c_text
+            Option:SetAttribute("ThemeRole", "text")
+            Option.Font = Enum.Font.GothamSemibold
+            Option.TextSize = 9
+            Option.BorderSizePixel = 0
+
+            Option.MouseButton1Click:Connect(function()
+                SelectBtn.Text = item
+                DropdownList.Visible = false
+                if onSelect then onSelect(item) end
+            end)
+        end
+        DropdownList.CanvasSize = UDim2.new(0, 0, 0, #newItems * 25)
+    end
+
+    populate(items)
+
+    SelectBtn.MouseButton1Click:Connect(function()
+        DropdownList.Visible = not DropdownList.Visible
+    end)
+
+    return Frame, populate, SelectBtn
+end
+
+-- Themes list
+local ThemeNames = {"Default", "Elegant Gold", "Crimson Blood", "Ocean Blue", "Neon Cyber"}
+CreateSelector(ThemeTab, "Select Theme", ThemeNames, function(selected)
+    ConfigData.SelectedTheme = selected
+    SaveConfig()
+    ApplyTheme()
+    NotifyToast("Theme", "Changed to " .. selected, "success")
+end)
+
+print("[Shadow Hub] UI fully loaded and ready!")
